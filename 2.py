@@ -11,13 +11,14 @@ import os
 
 load_dotenv()
 
+# ← works both locally (.env) and on Streamlit Cloud (Secrets)
 token = os.getenv("HUGGINGFACEHUB_API_TOKEN")
 if not token:
     try:
         import streamlit as st
         token = st.secrets["HUGGINGFACEHUB_API_TOKEN"]
     except Exception:
-        raise ValueError("❌ HUGGINGFACEHUB_API_TOKEN not found!")
+        raise ValueError("❌ HUGGINGFACEHUB_API_TOKEN not found! Add it to Streamlit Secrets.")
 
 client = InferenceClient(
     model="Qwen/Qwen2.5-72B-Instruct",
@@ -34,10 +35,14 @@ class StreamingHFChat(BaseChatModel):
     def _convert_messages(self, messages):
         hf_msgs = []
         for msg in messages:
-            if isinstance(msg, HumanMessage):   role = "user"
-            elif isinstance(msg, AIMessage):    role = "assistant"
-            elif isinstance(msg, SystemMessage): role = "system"
-            else: continue
+            if isinstance(msg, HumanMessage):
+                role = "user"
+            elif isinstance(msg, AIMessage):
+                role = "assistant"
+            elif isinstance(msg, SystemMessage):
+                role = "system"
+            else:
+                continue
             if hf_msgs and hf_msgs[-1]["role"] == role:
                 continue
             hf_msgs.append({"role": role, "content": msg.content})
@@ -51,7 +56,8 @@ class StreamingHFChat(BaseChatModel):
     def _stream(self, messages, **kwargs) -> Iterator[ChatGenerationChunk]:
         hf_msgs = self._convert_messages(messages)
         for chunk in self.client.chat_completion(hf_msgs, max_tokens=512, stream=True):
-            if not chunk.choices: continue
+            if not chunk.choices:
+                continue
             token = chunk.choices[0].delta.content or ""
             if token:
                 yield ChatGenerationChunk(message=AIMessageChunk(content=token))
@@ -62,7 +68,8 @@ class ChatState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
 def chat_node(state: ChatState):
-    response = llm.invoke(state['messages'])
+    messages = state['messages']
+    response = llm.invoke(messages)
     return {"messages": [response]}
 
 checkpointer = InMemorySaver()
@@ -72,3 +79,9 @@ graph.add_edge(START, "chat_node")
 graph.add_edge("chat_node", END)
 
 chatbot = graph.compile(checkpointer=checkpointer)
+
+# ```
+
+# Only one thing changed — the token block at the top. Now go to Streamlit Cloud → **Manage app** → **Secrets** and make sure this is there exactly:
+# ```
+# HUGGINGFACEHUB_API_TOKEN = "hf_xxxxxxxxxxxxxxxx"
