@@ -1,18 +1,17 @@
+# best backend
 from langgraph.graph import StateGraph, START, END
 from typing import TypedDict, Annotated, Any, Iterator
 from langchain_core.messages import BaseMessage, AIMessage, AIMessageChunk, HumanMessage, SystemMessage
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
-from langgraph.checkpoint.sqlite import SqliteSaver          # ← SQLite
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.message import add_messages
 from huggingface_hub import InferenceClient
 from dotenv import load_dotenv
-import sqlite3
 import os
 
 load_dotenv()
 
-# ── Token ────────────────────────────────────────────────────────────
 token = os.getenv("HUGGINGFACEHUB_API_TOKEN")
 if not token:
     try:
@@ -21,13 +20,11 @@ if not token:
     except Exception:
         raise ValueError("❌ HUGGINGFACEHUB_API_TOKEN not found!")
 
-# ── HuggingFace Client ───────────────────────────────────────────────
 client = InferenceClient(
-    model="google/gemma-3-27b-it",   # ← Gemma 4 31B
+    model="Qwen/Qwen2.5-72B-Instruct",
     token=token
 )
 
-# ── Streaming LLM ────────────────────────────────────────────────────
 class StreamingHFChat(BaseChatModel):
     client: Any
     class Config:
@@ -38,8 +35,8 @@ class StreamingHFChat(BaseChatModel):
     def _convert_messages(self, messages):
         hf_msgs = []
         for msg in messages:
-            if isinstance(msg, HumanMessage):    role = "user"
-            elif isinstance(msg, AIMessage):     role = "assistant"
+            if isinstance(msg, HumanMessage):   role = "user"
+            elif isinstance(msg, AIMessage):    role = "assistant"
             elif isinstance(msg, SystemMessage): role = "system"
             else: continue
             if hf_msgs and hf_msgs[-1]["role"] == role:
@@ -62,7 +59,6 @@ class StreamingHFChat(BaseChatModel):
 
 llm = StreamingHFChat(client=client)
 
-# ── Graph ─────────────────────────────────────────────────────────────
 class ChatState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
@@ -70,14 +66,10 @@ def chat_node(state: ChatState):
     response = llm.invoke(state['messages'])
     return {"messages": [response]}
 
+checkpointer = InMemorySaver()
 graph = StateGraph(ChatState)
 graph.add_node("chat_node", chat_node)
 graph.add_edge(START, "chat_node")
 graph.add_edge("chat_node", END)
-
-# ── SQLite Checkpointer ───────────────────────────────────────────────
-DB_PATH = "thrashchats.db"   # ← saved to disk, persists across sessions
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-checkpointer = SqliteSaver(conn)
 
 chatbot = graph.compile(checkpointer=checkpointer)
