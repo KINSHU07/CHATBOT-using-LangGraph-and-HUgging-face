@@ -1,24 +1,36 @@
+# ── Load env FIRST — before any LangChain imports ────────────────────
+from dotenv import load_dotenv
+load_dotenv()
+
+import os
+
+# ── LangSmith observability (must be set before LangChain initialises) ─
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
+os.environ["LANGCHAIN_ENDPOINT"]   = "https://api.smith.langchain.com"
+os.environ["LANGCHAIN_API_KEY"]    = os.getenv("LANGCHAIN_API_KEY", "")
+os.environ["LANGCHAIN_PROJECT"]    = os.getenv("LANGCHAIN_PROJECT", "ThrashChats")
+
+# ── Now import LangChain / LangGraph ─────────────────────────────────
 from langgraph.graph import StateGraph, START, END
-from typing import TypedDict, Annotated, Any, Iterator
+from langgraph.graph.message import add_messages
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langchain_core.messages import (
     BaseMessage, AIMessage, AIMessageChunk,
-    HumanMessage, SystemMessage
+    HumanMessage, SystemMessage,
 )
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
-from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.graph.message import add_messages
+from langchain_core.runnables import RunnableConfig
 from huggingface_hub import InferenceClient
-from dotenv import load_dotenv
+from typing import TypedDict, Annotated, Any, Iterator
 import sqlite3
-import os
-
-load_dotenv()
+import json
+from datetime import datetime
 
 # ── Config ────────────────────────────────────────────────────────────
 DB_PATH = "thrashchats.db"
 
-# ── HuggingFace Token ─────────────────────────────────────────────────
+# ── HuggingFace token ─────────────────────────────────────────────────
 token = os.getenv("HUGGINGFACEHUB_API_TOKEN")
 if not token:
     try:
@@ -30,7 +42,7 @@ if not token:
 # ── HuggingFace Inference Client ──────────────────────────────────────
 hf_client = InferenceClient(
     model="google/gemma-3-27b-it",
-    token=token
+    token=token,
 )
 
 # ── Streaming LangChain-compatible LLM wrapper ────────────────────────
@@ -45,7 +57,7 @@ class StreamingHFChat(BaseChatModel):
         return "streaming-hf-chat"
 
     def _convert_messages(self, messages: list[BaseMessage]) -> list[dict]:
-        """Convert LangChain messages → HuggingFace chat format.
+        """Convert LangChain messages → HuggingFace format.
         Skips consecutive same-role messages to avoid API errors."""
         result = []
         for msg in messages:
@@ -57,7 +69,6 @@ class StreamingHFChat(BaseChatModel):
                 role = "system"
             else:
                 continue
-            # Deduplicate consecutive same-role messages
             if result and result[-1]["role"] == role:
                 continue
             result.append({"role": role, "content": msg.content})
@@ -71,8 +82,7 @@ class StreamingHFChat(BaseChatModel):
 
     def _stream(self, messages: list[BaseMessage], **kwargs) -> Iterator[ChatGenerationChunk]:
         hf_msgs = self._convert_messages(messages)
-        stream = self.client.chat_completion(hf_msgs, max_tokens=512, stream=True)
-        for chunk in stream:
+        for chunk in self.client.chat_completion(hf_msgs, max_tokens=512, stream=True):
             if not chunk.choices:
                 continue
             token_text = chunk.choices[0].delta.content or ""
@@ -81,25 +91,29 @@ class StreamingHFChat(BaseChatModel):
 
 llm = StreamingHFChat(client=hf_client)
 
-# ── LangGraph State & Node ────────────────────────────────────────────
+# ── LangGraph state ───────────────────────────────────────────────────
 class ChatState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
+# ── Chat node — run_name appears as the trace label in LangSmith ──────
 def chat_node(state: ChatState) -> dict:
-    response = llm.invoke(state["messages"])
+    response = llm.invoke(
+        state["messages"],
+        config=RunnableConfig(run_name="ThrashChats · gemma-3-27b"),
+    )
     return {"messages": [response]}
 
-# ── Graph ─────────────────────────────────────────────────────────────
+# ── Build graph ───────────────────────────────────────────────────────
 graph = StateGraph(ChatState)
 graph.add_node("chat_node", chat_node)
 graph.add_edge(START, "chat_node")
 graph.add_edge("chat_node", END)
 
-# ── SQLite: shared connection for checkpointer + thread metadata ───────
+# ── Shared SQLite connection ──────────────────────────────────────────
 # check_same_thread=False is required for Streamlit's threaded environment
 db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 
-# Create thread_meta table in the same DB file as LangGraph's checkpointer
+# Thread metadata table lives in the same DB as LangGraph checkpoints
 db_conn.execute("""
     CREATE TABLE IF NOT EXISTS thread_meta (
         thread_id  TEXT PRIMARY KEY,
@@ -110,16 +124,13 @@ db_conn.execute("""
 """)
 db_conn.commit()
 
-# ── LangGraph compiled chatbot with SQLite checkpointer ───────────────
+# ── LangGraph chatbot with SQLite checkpointer ────────────────────────
 checkpointer = SqliteSaver(db_conn)
 chatbot = graph.compile(checkpointer=checkpointer)
 
-# ── Thread metadata helpers (used by the Streamlit frontend) ──────────
-import json
-from datetime import datetime
-
+# ── Thread metadata helpers ───────────────────────────────────────────
 def load_threads() -> dict:
-    """Return all threads ordered newest-first as {thread_id: {...}}."""
+    """Return all threads ordered newest-first."""
     rows = db_conn.execute(
         "SELECT thread_id, title, created_at, messages FROM thread_meta ORDER BY created_at DESC"
     ).fetchall()
@@ -133,20 +144,20 @@ def load_threads() -> dict:
     }
 
 def save_thread(thread_id: str, title: str, created_at: str, messages: list) -> None:
-    """Upsert a thread's metadata into SQLite."""
+    """Upsert a thread's metadata."""
     db_conn.execute(
         """
         INSERT INTO thread_meta (thread_id, title, created_at, messages)
         VALUES (?, ?, ?, ?)
         ON CONFLICT(thread_id) DO UPDATE SET
-            title      = excluded.title,
-            messages   = excluded.messages
+            title    = excluded.title,
+            messages = excluded.messages
         """,
         (thread_id, title, created_at, json.dumps(messages)),
     )
     db_conn.commit()
 
 def delete_thread(thread_id: str) -> None:
-    """Remove a thread's metadata (LangGraph checkpoint rows stay for safety)."""
+    """Delete a thread's metadata."""
     db_conn.execute("DELETE FROM thread_meta WHERE thread_id = ?", (thread_id,))
     db_conn.commit()
