@@ -4,16 +4,27 @@ load_dotenv()
 
 import os
 
-# ── LangSmith observability (must be set before LangChain initialises) ─
+# ── LangSmith observability ───────────────────────────────────────────
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
 os.environ["LANGCHAIN_ENDPOINT"]   = "https://api.smith.langchain.com"
 os.environ["LANGCHAIN_API_KEY"]    = os.getenv("LANGCHAIN_API_KEY", "")
 os.environ["LANGCHAIN_PROJECT"]    = os.getenv("LANGCHAIN_PROJECT", "ThrashChats")
 
-# ── Now import LangChain / LangGraph ─────────────────────────────────
+# ── SqliteSaver: try both import paths (handles all langgraph versions) ─
+try:
+    from langgraph.checkpoint.sqlite import SqliteSaver
+except ImportError:
+    try:
+        from langgraph_checkpoint_sqlite import SqliteSaver
+    except ImportError:
+        raise ImportError(
+            "SQLite checkpointer not found.\n"
+            "Run: pip install langgraph-checkpoint-sqlite"
+        )
+
+# ── LangChain / LangGraph imports ─────────────────────────────────────
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langchain_core.messages import (
     BaseMessage, AIMessage, AIMessageChunk,
     HumanMessage, SystemMessage,
@@ -25,7 +36,6 @@ from huggingface_hub import InferenceClient
 from typing import TypedDict, Annotated, Any, Iterator
 import sqlite3
 import json
-from datetime import datetime
 
 # ── Config ────────────────────────────────────────────────────────────
 DB_PATH = "thrashchats.db"
@@ -37,7 +47,9 @@ if not token:
         import streamlit as st
         token = st.secrets["HUGGINGFACEHUB_API_TOKEN"]
     except Exception:
-        raise ValueError("❌ HUGGINGFACEHUB_API_TOKEN not found in .env or Streamlit secrets.")
+        raise ValueError(
+            "❌ HUGGINGFACEHUB_API_TOKEN not found in .env or Streamlit secrets."
+        )
 
 # ── HuggingFace Inference Client ──────────────────────────────────────
 hf_client = InferenceClient(
@@ -58,7 +70,7 @@ class StreamingHFChat(BaseChatModel):
 
     def _convert_messages(self, messages: list[BaseMessage]) -> list[dict]:
         """Convert LangChain messages → HuggingFace format.
-        Skips consecutive same-role messages to avoid API errors."""
+        Deduplicates consecutive same-role messages to avoid API errors."""
         result = []
         for msg in messages:
             if isinstance(msg, HumanMessage):
@@ -69,6 +81,7 @@ class StreamingHFChat(BaseChatModel):
                 role = "system"
             else:
                 continue
+            # Skip consecutive duplicate roles
             if result and result[-1]["role"] == role:
                 continue
             result.append({"role": role, "content": msg.content})
@@ -76,18 +89,21 @@ class StreamingHFChat(BaseChatModel):
 
     def _generate(self, messages: list[BaseMessage], **kwargs) -> ChatResult:
         hf_msgs = self._convert_messages(messages)
-        response = self.client.chat_completion(hf_msgs, max_tokens=512)
+        response = self.client.chat_completion(hf_msgs, max_tokens=1024)
         content = response.choices[0].message.content
-        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=content))])
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content=content))]
+        )
 
     def _stream(self, messages: list[BaseMessage], **kwargs) -> Iterator[ChatGenerationChunk]:
         hf_msgs = self._convert_messages(messages)
-        for chunk in self.client.chat_completion(hf_msgs, max_tokens=512, stream=True):
+        stream = self.client.chat_completion(hf_msgs, max_tokens=1024, stream=True)
+        for chunk in stream:
             if not chunk.choices:
                 continue
-            token_text = chunk.choices[0].delta.content or ""
-            if token_text:
-                yield ChatGenerationChunk(message=AIMessageChunk(content=token_text))
+            delta = chunk.choices[0].delta.content or ""
+            if delta:
+                yield ChatGenerationChunk(message=AIMessageChunk(content=delta))
 
 llm = StreamingHFChat(client=hf_client)
 
@@ -95,7 +111,7 @@ llm = StreamingHFChat(client=hf_client)
 class ChatState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
-# ── Chat node — run_name appears as the trace label in LangSmith ──────
+# ── Chat node ─────────────────────────────────────────────────────────
 def chat_node(state: ChatState) -> dict:
     response = llm.invoke(
         state["messages"],
@@ -110,10 +126,11 @@ graph.add_edge(START, "chat_node")
 graph.add_edge("chat_node", END)
 
 # ── Shared SQLite connection ──────────────────────────────────────────
-# check_same_thread=False is required for Streamlit's threaded environment
+# isolation_level=None → autocommit; check_same_thread=False for Streamlit
 db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+db_conn.execute("PRAGMA journal_mode=WAL")   # prevents DB locked errors
 
-# Thread metadata table lives in the same DB as LangGraph checkpoints
+# Thread metadata table (shares the same DB file as LangGraph checkpoints)
 db_conn.execute("""
     CREATE TABLE IF NOT EXISTS thread_meta (
         thread_id  TEXT PRIMARY KEY,
@@ -124,15 +141,16 @@ db_conn.execute("""
 """)
 db_conn.commit()
 
-# ── LangGraph chatbot with SQLite checkpointer ────────────────────────
+# ── LangGraph chatbot ─────────────────────────────────────────────────
 checkpointer = SqliteSaver(db_conn)
 chatbot = graph.compile(checkpointer=checkpointer)
 
 # ── Thread metadata helpers ───────────────────────────────────────────
 def load_threads() -> dict:
-    """Return all threads ordered newest-first."""
+    """Return all threads ordered newest-first as {thread_id: {...}}."""
     rows = db_conn.execute(
-        "SELECT thread_id, title, created_at, messages FROM thread_meta ORDER BY created_at DESC"
+        "SELECT thread_id, title, created_at, messages "
+        "FROM thread_meta ORDER BY created_at DESC"
     ).fetchall()
     return {
         row[0]: {
@@ -143,8 +161,13 @@ def load_threads() -> dict:
         for row in rows
     }
 
-def save_thread(thread_id: str, title: str, created_at: str, messages: list) -> None:
-    """Upsert a thread's metadata."""
+def save_thread(
+    thread_id: str,
+    title: str,
+    created_at: str,
+    messages: list,
+) -> None:
+    """Upsert thread metadata into SQLite."""
     db_conn.execute(
         """
         INSERT INTO thread_meta (thread_id, title, created_at, messages)
@@ -158,6 +181,8 @@ def save_thread(thread_id: str, title: str, created_at: str, messages: list) -> 
     db_conn.commit()
 
 def delete_thread(thread_id: str) -> None:
-    """Delete a thread's metadata."""
-    db_conn.execute("DELETE FROM thread_meta WHERE thread_id = ?", (thread_id,))
+    """Remove a thread's metadata row."""
+    db_conn.execute(
+        "DELETE FROM thread_meta WHERE thread_id = ?", (thread_id,)
+    )
     db_conn.commit()

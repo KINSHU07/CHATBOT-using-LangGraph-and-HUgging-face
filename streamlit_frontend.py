@@ -1,6 +1,6 @@
 import streamlit as st
 from langgraph_backend import chatbot, load_threads, save_thread, delete_thread
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, BaseMessage
 from datetime import datetime
 import uuid
 
@@ -33,6 +33,7 @@ st.markdown("""
     --user-bg:      #1A1A2E;
     --user-border:  rgba(124,106,247,0.3);
     --green:        #22C55E;
+    --amber:        #F59E0B;
     --radius:       12px;
 }
 
@@ -66,20 +67,14 @@ html, body, [data-testid="stAppViewContainer"] {
     display: flex; align-items: center; gap: 0.65rem;
 }
 .sb-icon {
-    width: 30px; height: 30px; border-radius: 8px;
+    width: 32px; height: 32px; border-radius: 8px;
     background: var(--accent); display: flex;
     align-items: center; justify-content: center;
-    font-size: 0.9rem; flex-shrink: 0;
+    font-size: 1rem; flex-shrink: 0;
     box-shadow: 0 0 16px var(--accent-glow);
 }
-.sb-brand {
-    font-size: 0.9rem; font-weight: 600;
-    color: var(--text); letter-spacing: -0.01em;
-}
-.sb-version {
-    font-size: 0.62rem; color: var(--text-mute);
-    font-family: 'JetBrains Mono', monospace; margin-top: 1px;
-}
+.sb-brand { font-size: 0.9rem; font-weight: 600; color: var(--text); letter-spacing: -0.01em; }
+.sb-version { font-size: 0.6rem; color: var(--text-mute); font-family: 'JetBrains Mono', monospace; margin-top: 2px; }
 .sb-section-label {
     font-size: 0.6rem; font-weight: 600; letter-spacing: 0.1em;
     text-transform: uppercase; color: var(--text-mute);
@@ -98,8 +93,13 @@ div[data-testid="stButton"] > button {
     padding: 0.55rem 0.9rem !important;
     width: 100% !important;
     text-align: left !important;
-    transition: all 0.15s ease !important;
+    transition: background 0.15s ease, color 0.15s ease !important;
     margin-bottom: 1px !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    box-shadow: none !important;
+    outline: none !important;
 }
 div[data-testid="stButton"] > button:hover {
     background: var(--surface2) !important;
@@ -107,21 +107,26 @@ div[data-testid="stButton"] > button:hover {
     border: none !important;
     box-shadow: none !important;
 }
-/* New chat — first button */
+div[data-testid="stButton"] > button:focus {
+    outline: none !important;
+    box-shadow: none !important;
+}
+
+/* ── New Chat (first button) ── */
 div[data-testid="stButton"]:first-of-type > button {
     background: var(--accent-soft) !important;
     color: var(--accent) !important;
-    border: 1px solid rgba(124,106,247,0.2) !important;
-    border-radius: 8px !important;
+    border: 1px solid rgba(124,106,247,0.25) !important;
     font-weight: 500 !important;
     font-size: 0.8rem !important;
     text-align: center !important;
     padding: 0.65rem 1rem !important;
-    margin-bottom: 0.3rem !important;
+    margin-bottom: 0.4rem !important;
+    letter-spacing: 0 !important;
 }
 div[data-testid="stButton"]:first-of-type > button:hover {
     background: rgba(124,106,247,0.2) !important;
-    box-shadow: 0 0 20px var(--accent-glow) !important;
+    box-shadow: 0 0 18px var(--accent-glow) !important;
 }
 
 /* ══ TOPBAR ═══════════════════════════════════════════════════════════ */
@@ -134,32 +139,33 @@ div[data-testid="stButton"]:first-of-type > button:hover {
 }
 .topbar-title {
     font-size: 0.88rem; font-weight: 500; color: var(--text-dim);
-    letter-spacing: -0.01em; max-width: 400px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    letter-spacing: -0.01em;
+    max-width: 360px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
 }
-.topbar-pills { display: flex; gap: 0.4rem; align-items: center; }
+.topbar-pills { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
 .pill {
-    font-size: 0.62rem; font-family: 'JetBrains Mono', monospace;
+    font-size: 0.6rem; font-family: 'JetBrains Mono', monospace;
     color: var(--text-mute); background: var(--surface);
     border: 1px solid var(--border); border-radius: 99px;
-    padding: 0.2rem 0.65rem; letter-spacing: 0.04em;
+    padding: 0.2rem 0.6rem; letter-spacing: 0.04em; white-space: nowrap;
 }
 .pill-live {
-    color: var(--green); border-color: rgba(34,197,94,0.2);
-    background: rgba(34,197,94,0.06);
-    display: flex; align-items: center; gap: 0.35rem;
+    color: var(--green) !important; border-color: rgba(34,197,94,0.25) !important;
+    background: rgba(34,197,94,0.07) !important;
+    display: inline-flex; align-items: center; gap: 0.3rem;
 }
 .pill-smith {
-    color: #F59E0B; border-color: rgba(245,158,11,0.2);
-    background: rgba(245,158,11,0.06);
-    display: flex; align-items: center; gap: 0.35rem;
+    color: var(--amber) !important; border-color: rgba(245,158,11,0.25) !important;
+    background: rgba(245,158,11,0.07) !important;
+    display: inline-flex; align-items: center; gap: 0.3rem;
 }
 .live-dot {
     width: 5px; height: 5px; border-radius: 50%;
-    background: currentColor;
+    background: currentColor; flex-shrink: 0;
     animation: blink 2s ease-in-out infinite;
 }
-@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.25} }
 
 /* ══ WELCOME ══════════════════════════════════════════════════════════ */
 .welcome {
@@ -168,14 +174,14 @@ div[data-testid="stButton"]:first-of-type > button:hover {
     animation: fadeUp 0.5s ease both;
 }
 .welcome-logo {
-    width: 52px; height: 52px; border-radius: 14px;
+    width: 54px; height: 54px; border-radius: 15px;
     background: var(--accent); display: flex;
     align-items: center; justify-content: center;
-    font-size: 1.5rem; margin-bottom: 1.4rem;
-    box-shadow: 0 0 40px var(--accent-glow);
+    font-size: 1.6rem; margin-bottom: 1.5rem;
+    box-shadow: 0 0 48px var(--accent-glow);
 }
 .welcome-title {
-    font-size: 1.8rem; font-weight: 600; color: var(--text);
+    font-size: 1.85rem; font-weight: 600; color: var(--text);
     letter-spacing: -0.03em; margin-bottom: 0.5rem; text-align: center;
 }
 .welcome-sub {
@@ -196,7 +202,7 @@ div[data-testid="stButton"]:first-of-type > button:hover {
     transform: translateY(-1px);
 }
 .prompt-label {
-    font-size: 0.65rem; font-weight: 600; letter-spacing: 0.08em;
+    font-size: 0.62rem; font-weight: 600; letter-spacing: 0.08em;
     text-transform: uppercase; color: var(--accent); margin-bottom: 0.35rem;
 }
 .prompt-text { font-size: 0.82rem; color: var(--text-dim); line-height: 1.5; }
@@ -220,10 +226,12 @@ div[data-testid="stButton"]:first-of-type > button:hover {
 [data-testid="chatAvatarIcon-user"] {
     background: var(--surface2) !important;
     border: 1px solid var(--border-hover) !important;
+    box-shadow: none !important;
 }
 [data-testid="stChatMessageContent"] {
     background: transparent !important; border: none !important; padding: 0 !important;
 }
+
 /* User bubble */
 [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
     flex-direction: row-reverse !important;
@@ -239,6 +247,7 @@ div[data-testid="stButton"]:first-of-type > button:hover {
     color: var(--text) !important; font-size: 0.9rem !important;
     line-height: 1.7 !important; font-family: 'Sora', sans-serif !important;
 }
+
 /* Assistant bubble */
 [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) [data-testid="stChatMessageContent"] {
     background: transparent !important; border: none !important; padding: 0 !important;
@@ -251,6 +260,8 @@ div[data-testid="stButton"]:first-of-type > button:hover {
     border-bottom: 1px solid var(--border) !important;
     padding-bottom: 1.2rem !important;
 }
+
+/* Code */
 [data-testid="stChatMessage"] code {
     background: var(--surface2) !important; border: 1px solid var(--border) !important;
     border-radius: 5px !important; padding: 0.15rem 0.45rem !important;
@@ -263,7 +274,7 @@ div[data-testid="stButton"]:first-of-type > button:hover {
     padding: 1rem 1.2rem !important; overflow-x: auto !important; margin: 0.5rem 0 !important;
 }
 
-/* ══ INPUT ════════════════════════════════════════════════════════════ */
+/* ══ INPUT BAR ════════════════════════════════════════════════════════ */
 [data-testid="stBottom"] {
     background: linear-gradient(to top, var(--bg) 65%, transparent) !important;
     padding: 0.5rem 0 1.5rem !important;
@@ -271,9 +282,10 @@ div[data-testid="stButton"]:first-of-type > button:hover {
 [data-testid="stChatInput"] {
     background: var(--surface) !important; border: 1px solid var(--border) !important;
     border-radius: 14px !important; box-shadow: 0 4px 24px rgba(0,0,0,0.4) !important;
+    transition: border-color 0.2s, box-shadow 0.2s !important;
 }
 [data-testid="stChatInput"]:focus-within {
-    border-color: rgba(124,106,247,0.4) !important;
+    border-color: rgba(124,106,247,0.45) !important;
     box-shadow: 0 0 0 3px rgba(124,106,247,0.08), 0 4px 24px rgba(0,0,0,0.4) !important;
 }
 [data-testid="stChatInput"] textarea {
@@ -285,16 +297,19 @@ div[data-testid="stButton"]:first-of-type > button:hover {
 [data-testid="stChatInput"] textarea::placeholder { color: var(--text-mute) !important; }
 [data-testid="stChatInputSubmitButton"] button {
     background: var(--accent) !important; border: none !important;
-    border-radius: 9px !important; box-shadow: 0 0 16px var(--accent-glow) !important;
+    border-radius: 9px !important; box-shadow: 0 0 14px var(--accent-glow) !important;
+    transition: all 0.15s ease !important;
 }
 [data-testid="stChatInputSubmitButton"] button:hover {
-    box-shadow: 0 0 28px var(--accent-glow) !important; transform: scale(1.06) !important;
+    box-shadow: 0 0 26px var(--accent-glow) !important;
+    transform: scale(1.06) !important;
 }
 
 /* ══ SCROLLBAR ════════════════════════════════════════════════════════ */
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.1); }
 
 @keyframes fadeUp {
     from { opacity: 0; transform: translateY(8px); }
@@ -305,7 +320,7 @@ div[data-testid="stButton"]:first-of-type > button:hover {
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  SESSION STATE BOOTSTRAP
+#  SESSION STATE
 # ══════════════════════════════════════════════════════════════════════
 if "threads" not in st.session_state:
     st.session_state["threads"] = load_threads()
@@ -321,17 +336,18 @@ if not st.session_state["threads"]:
 if "active_thread" not in st.session_state:
     st.session_state["active_thread"] = next(iter(st.session_state["threads"]))
 
+# Safety guard — active thread must still exist
 if st.session_state["active_thread"] not in st.session_state["threads"]:
     st.session_state["active_thread"] = next(iter(st.session_state["threads"]))
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  CALLBACKS  — on_click fires BEFORE rerun (fixes thread-switch bug)
+#  CALLBACKS — on_click runs BEFORE Streamlit reruns (fixes switch bug)
 # ══════════════════════════════════════════════════════════════════════
-def switch_thread(tid: str):
+def switch_thread(tid: str) -> None:
     st.session_state["active_thread"] = tid
 
-def new_session():
+def new_session() -> None:
     new_id = str(uuid.uuid4())
     now = datetime.now().strftime("%H:%M")
     st.session_state["threads"][new_id] = {
@@ -356,7 +372,12 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
     st.markdown('<div style="padding:0.8rem 0.8rem 0.3rem">', unsafe_allow_html=True)
-    st.button("＋  New Chat", key="new_chat", on_click=new_session, use_container_width=True)
+    st.button(
+        "＋  New Chat",
+        key="new_chat",
+        on_click=new_session,
+        use_container_width=True,
+    )
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="sb-section-label">Recents</div>', unsafe_allow_html=True)
@@ -365,8 +386,8 @@ with st.sidebar:
     for tid, tdata in list(st.session_state["threads"].items()):
         is_active = tid == st.session_state["active_thread"]
         label = tdata["title"]
-        short = (label[:28] + "…") if len(label) > 28 else label
-        display = f"● {short}" if is_active else short
+        short = (label[:26] + "…") if len(label) > 26 else label
+        display = f"● {short}" if is_active else f"  {short}"
 
         st.button(
             display,
@@ -380,19 +401,27 @@ with st.sidebar:
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  ACTIVE THREAD
+#  RESOLVE ACTIVE THREAD
 # ══════════════════════════════════════════════════════════════════════
 active_id   = st.session_state["active_thread"]
 active_data = st.session_state["threads"][active_id]
 CONFIG      = {"configurable": {"thread_id": active_id}}
 
+# Sanitise title for safe HTML injection
+safe_title = (
+    active_data["title"]
+    .replace("&", "&amp;")
+    .replace("<", "&lt;")
+    .replace(">", "&gt;")
+    .replace('"', "&quot;")
+)
 
 # ══════════════════════════════════════════════════════════════════════
 #  TOPBAR
 # ══════════════════════════════════════════════════════════════════════
 st.markdown(f"""
 <div class="topbar">
-    <span class="topbar-title">{active_data['title']}</span>
+    <span class="topbar-title">{safe_title}</span>
     <div class="topbar-pills">
         <span class="pill pill-live"><span class="live-dot"></span>online</span>
         <span class="pill pill-smith"><span class="live-dot"></span>LangSmith</span>
@@ -404,7 +433,7 @@ st.markdown(f"""
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  WELCOME SCREEN
+#  WELCOME SCREEN  (empty thread only)
 # ══════════════════════════════════════════════════════════════════════
 if not active_data["messages"]:
     st.markdown("""
@@ -437,9 +466,9 @@ if not active_data["messages"]:
 # ══════════════════════════════════════════════════════════════════════
 #  CONVERSATION HISTORY
 # ══════════════════════════════════════════════════════════════════════
-for message in active_data["messages"]:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+for msg in active_data["messages"]:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -448,28 +477,43 @@ for message in active_data["messages"]:
 user_input = st.chat_input("Message ThrashChats...")
 
 if user_input:
+    # Auto-title on first message
     if active_data["title"] == "New Chat":
         active_data["title"] = user_input[:40]
 
+    # Show & store user message
     active_data["messages"].append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
+    # Stream assistant response
     with st.chat_message("assistant"):
         placeholder   = st.empty()
         full_response = ""
 
-        for chunk, _meta in chatbot.stream(
-            {"messages": [HumanMessage(content=user_input)]},
-            config=CONFIG,
-            stream_mode="messages",
-        ):
-            if chunk.content:
-                full_response += chunk.content
-                placeholder.markdown(full_response + "▌")
+        try:
+            # stream_mode="messages" yields (chunk, metadata) tuples
+            for chunk, _meta in chatbot.stream(
+                {"messages": [HumanMessage(content=user_input)]},
+                config=CONFIG,
+                stream_mode="messages",
+            ):
+                # chunk can be a BaseMessage or plain string depending on version
+                content = (
+                    chunk.content
+                    if isinstance(chunk, BaseMessage)
+                    else str(chunk)
+                )
+                if content:
+                    full_response += content
+                    placeholder.markdown(full_response + "▌")
+
+        except Exception as e:
+            full_response = f"⚠️ Error: {e}"
 
         placeholder.markdown(full_response)
 
+    # Persist
     active_data["messages"].append({"role": "assistant", "content": full_response})
     save_thread(
         active_id,
